@@ -1,6 +1,6 @@
-using GeneralMetadata
+using Repology
 using Test
 
-@testset "GeneralMetadata.jl" begin
+@testset "Repology.jl" begin
     # Write your tests here.
 end
