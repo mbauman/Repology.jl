@@ -3,7 +3,7 @@ using DataStructures: DefaultOrderedDict, OrderedDict
 using CSV: CSV
 using DataFrames: DataFrames, DataFrame, groupby, combine, transform, combine, eachrow
 
-using GeneralMetadata: identify_components, merge_components!, normalize_repo
+using Repology: identify_components, merge_components!, normalize_repo
 
 function main()
     # Load Repology data and reshape for efficiency
