@@ -3,11 +3,13 @@ using DataStructures: DefaultDict, DefaultOrderedDict, OrderedDict
 using CSV: CSV
 using DataFrames: DataFrames, DataFrame, groupby, combine, transform, combine, eachrow
 
-function main()
+function import_dump()
     run(pipeline(`curl -s https://dumps.repology.org/repology-database-dump-latest.sql.zst`,
         `zstd -d`,
         `psql -v ON_ERROR_STOP=1`))
+end
 
+function gather_links()
     @info "gather repositories"
     sql = """
         COPY (SELECT
@@ -74,7 +76,10 @@ function main()
         pattern = replace(pattern, v => "\\E\\1\\Q")
         push!(rs, pattern)
     end
+    return download_patterns, repositories
+end
 
+function gather_cpes()
     @info "gather CPEs"
     sql = """
         COPY (SELECT
@@ -89,6 +94,16 @@ function main()
         seekstart(io)
         CSV.read(io, DataFrame, header=["effname", "cpe"])
     end
+    return cpes
+end
+
+function main()
+    if !success(`psql -U repology -c "SELECT * FROM packages LIMIT 1"`)
+        import_dump()
+    end
+
+    download_patterns, repositories = gather_links()
+    cpes = gather_cpes()
 
     repology_info = Dict{String, Any}()
     for project in union(keys(download_patterns), keys(repositories))
