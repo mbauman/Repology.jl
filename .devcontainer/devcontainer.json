@@ -1,8 +1,8 @@
 {
-    "name": "GeneralMetadata.jl",
+    "name": "Repology.jl",
     "dockerComposeFile": "docker-compose.yml",
     "service": "app",
-    "workspaceFolder": "/workspaces/GeneralMetadata.jl",
+    "workspaceFolder": "/workspaces/Repology.jl",
     "features": {
         "ghcr.io/julialang/devcontainer-features/julia:1": {}
     },
