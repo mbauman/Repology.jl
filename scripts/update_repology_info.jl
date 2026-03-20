@@ -88,10 +88,10 @@ end
 function gather_cpes()
     @info "gather CPEs"
     sql = """
-        COPY (SELECT
+        COPY (SELECT DISTINCT
             p.effname,
             p.cpe_vendor || ':' || p.cpe_product AS cpe
-        FROM project_cpe p
+        FROM packages p
         WHERE p.cpe_vendor IS NOT NULL AND p.cpe_product IS NOT NULL)
         TO STDOUT WITH (format csv);
     """
@@ -104,6 +104,25 @@ function gather_cpes()
     for row in eachrow(df)
         push!(get!(cpes, row.effname, String[]), row.cpe)
     end
+    # And now override those with manual entries, if they exist:
+    sql = """
+        COPY (SELECT
+            p.effname,
+            p.cpe_vendor || ':' || p.cpe_product AS cpe
+        FROM manual_cpes p
+        WHERE p.cpe_vendor IS NOT NULL AND p.cpe_product IS NOT NULL)
+        TO STDOUT WITH (format csv);
+    """
+    df = mktemp() do _, io
+        run(pipeline(`psql -U repology -c $sql`, stdout=io))
+        seekstart(io)
+        CSV.read(io, DataFrame, header=["effname", "cpe"])
+    end
+    cpe_overrides = Dict{String,Vector{String}}()
+    for row in eachrow(df)
+        push!(get!(cpe_overrides, row.effname, String[]), row.cpe)
+    end
+    merge!(cpes, cpe_overrides)
     return cpes
 end
 
