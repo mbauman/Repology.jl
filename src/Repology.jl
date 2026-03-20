@@ -43,7 +43,7 @@ end
 const CPE_DATA = Ref{Dict{String,Any}}()
 function cpe_data()
     isassigned(CPE_DATA) && return CPE_DATA[]
-    return CPE_DATA[] = TOML.parsefile(joinpath(@__DIR__, "..", "data", "cpe.toml"))
+    return CPE_DATA[] = TOML.parsefile(joinpath(@__DIR__, "..", "data", "cpes.toml"))
 end
 
 """
@@ -109,7 +109,7 @@ function identify_upstream(url, hash)
     # First look for exact or normalized matches directly
     for u in (url, normalize_url(url))
         haskey(dls, u) && return dls[u]
-        haskey(repos, u) && return (repos[u], get_version_from_commit(repos[u], hash))
+        haskey(repos, u) && return (repos[u], get_version_from_commit(url, hash))
     end
 
     # Finally, we can look for download URLs with a similar version pattern as a known URL.
