@@ -10,7 +10,7 @@ function import_dump()
 end
 
 function gather_links()
-    @info "gather repositories"
+    @info "gather repositories from package downloads"
     sql = """
         COPY (SELECT
             (elem.value ->> 0)::integer AS link_type,
@@ -24,8 +24,7 @@ function gather_links()
         FROM packages p
         CROSS JOIN LATERAL json_array_elements(p.links) AS elem(value)
         JOIN links l ON l.id = (elem.value ->> 1)::integer
-        WHERE (NOT p.shadow='t') AND
-              ((elem.value ->> 0)::integer = 1 or (elem.value ->> 0)::integer = 2))
+        WHERE ((elem.value ->> 0)::integer = 1 or (elem.value ->> 0)::integer = 2))
         TO STDOUT WITH (format csv);
     """
     df = mktemp() do _, io
