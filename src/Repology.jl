@@ -1,6 +1,7 @@
 module Repology
 
 using TOML: TOML
+using DataStructures: OrderedDict
 
 const REPOSITORY_DATA = Ref{Dict{String,String}}()
 function repository_data()
@@ -22,22 +23,68 @@ function download_data()
     end
     return DOWNLOAD_DATA[] = data
 end
-const DOWNLOAD_PREFIX_POSTFIX_MAP = Ref{Dict{String,Vector{Pair{String,String}}}}()
+const DOWNLOAD_PREFIX_REGEX_MAP = Ref{Dict{String,Vector{Pair{Regex,String}}}}()
 const MAX_PREFIX_LENGTH = 120
-function download_prefix_postfix_map()
-    isassigned(DOWNLOAD_PREFIX_POSTFIX_MAP) && return DOWNLOAD_PREFIX_POSTFIX_MAP[]
-    map = Dict{String,Vector{Pair{String,String}}}()
+function download_prefix_regex_map()
+    isassigned(DOWNLOAD_PREFIX_REGEX_MAP) && return DOWNLOAD_PREFIX_REGEX_MAP[]
+    map = Dict{String,OrderedDict{String,String}}()
     for (k,v) in download_data()
         version = chopprefix(v[2], "v") # drop an optional v prefix
         length(version) >= 3 || continue # ensure non-trivial version numbers
         version[1] in '0':'9' || continue # ensure version starts with a digit
-        matches = split(k, version)
-        length(matches) == 2 || continue # ensure version is only referenced once
-        prefix, postfix = matches
+
+        # There are three very common cases:
+        # * The version number appears exactly once or more
+        # * The version number appears once and a _subset_ (often just major/minor) or _munged_ flavor of it appears a second time
+        #   - these often appear _before_ the real version number
+        idx = findfirst(version, k)
+        idx === nothing && continue # ensure the version number appears in the URL at least once
+        prefix, rest = SubString(k, 1, prevind(k, idx[1])), SubString(k, idx[1])
         length(prefix) > MAX_PREFIX_LENGTH && continue # skip absurdly long prefixes
-        sort!(unique!(push!(get!(map, prefix, Pair{String,String}[]), postfix=>v[1])), by=length∘first, rev=true)
+
+        # Now we transform rest into a regular expression to match the version number one or more times
+        vpat = replace(replace(rest, version => "\\E(.*?)\\Q"; count=1), version => "\\E\\1\\Q")
+        pattern = string("^\\Q", vpat, "\\E\$")
+
+        suffix_map = get!(map, prefix, OrderedDict{String,String}())
+        if haskey(suffix_map, pattern) && suffix_map[pattern] != v[1]
+            # If we have multiple projects with the same prefix/regex pair, we can't use it for matching
+            # These are often just bad aliases in the data
+            suffix_map[pattern] = ""
+        else
+            suffix_map[pattern] = v[1]
+        end
+
+        # Now, secondarily, if a non-trivial prefix of the version number appears in the prefix, we also support that.
+        munged_version = version
+        while (munged_version = munged_version[1:prevind(munged_version, end)]; length(munged_version) >= 3)
+            if contains(prefix, munged_version)
+                idx = findfirst(munged_version, k)
+                prefix, rest = SubString(k, 1, prevind(k, idx[1])), SubString(k, idx[1])
+                vpat = replace(replace(rest, version => "\\E(.*?)\\Q"; count=1), version => "\\E\\1\\Q")
+                vpat = replace(vpat, munged_version => "\\E.{$(length(munged_version))}\\Q") # just do a fixed-width wildcard
+                pattern = string("^\\Q", vpat, "\\E\$")
+
+                suffix_map = get!(map, prefix, OrderedDict{String,String}())
+                if haskey(suffix_map, pattern) && suffix_map[pattern] != v[1]
+                    # If we have multiple projects with the same prefix/regex pair, we can't use it for matching
+                    # These are often just bad aliases in the data
+                    suffix_map[pattern] = ""
+                else
+                    suffix_map[pattern] = v[1]
+                end
+                break
+            end
+        end
     end
-    return DOWNLOAD_PREFIX_POSTFIX_MAP[] = map
+    for (_,suffixmap) in map
+        # Now remove the "" sentinels we set for ambiguous cases
+        filter!(((k,v),)->v != "", suffixmap)
+        # And sort the suffixes by length so we always match the longest one first
+        sort!(suffixmap, by=length, rev=true)
+    end
+    # And, finally, compile all the regexes, preserving their ordering for longest (plaintext) match first
+    return DOWNLOAD_PREFIX_REGEX_MAP[] = Dict{String, Vector{Pair{Regex,String}}}(k => Pair{Regex,String}[(Regex(p) => v) for (p,v) in suffixmap] for (k,suffixmap) in map)
 end
 
 const CPE_DATA = Ref{Dict{String,Any}}()
@@ -52,10 +99,11 @@ end
 Given a URL, strip the scheme (e.g., https:// or git://) and known/common extension suffixes
 """
 function normalize_url(url)
-    # TODO: it'd be nice to also support Gentoo/Pacman mirror:// style URLs and known mirrors
-    url = chopprefix(url, r"^[^:]+://(www\.|ftp\.)?")
-    url = chopsuffix(url, r"(\.tar)?\.(gz|bz2|xz|zip|bzip2|tgz|tbz2|git)$")
-    return url
+    # TODO: it'd be nice to also support normalizing Gentoo/Pacman mirror:// style URLs and known mirrors
+    return lowercase(url) |>
+        x->chopprefix(x, r"^[^:]+://(www\.|ftp\.)?") |>
+        x->chopsuffix(x, r"(?:\.tar)?\.(?:gz|bz2|xz|zip|bzip2|tgz|tbz2|git)(?:/download)?$") |>
+        x->replace(x, r"//+" => "/")
 end
 
 const _GIT_CACHE = Dict{String,String}()
@@ -114,19 +162,21 @@ function identify_upstream(url, hash)
 
     # Finally, we can look for download URLs with a similar version pattern as a known URL.
     # this is surprisingly expensive as there are a lot of patterns, so we use a map of
-    # prefix and postfix patterns to find the longest one that matches and then ensure
+    # prefix and regex patterns to find the longest one that matches and then ensure
     # we got something version-ish back
+    prefix_regex_map = download_prefix_regex_map()
     for u in (url, normalize_url(url))
         idx = min(MAX_PREFIX_LENGTH, prevind(u, lastindex(u), 2))
         while idx > 5
             idx = prevind(u, idx)
             prefix = SubString(u, 1, idx)
-            for (postfix, proj) in get(download_prefix_postfix_map(), prefix, Pair{String,String}[])
-                if endswith(url, postfix)
-                    ver = chopprefix(chopsuffix(u, postfix), prefix)
-                    if length(ver) >= 3 && ver[1] in '0':'9' && !contains(ver, "/")
-                        return (proj, ver)
-                    end
+            rest = SubString(u, nextind(u, idx))
+            for (regex, proj) in get(prefix_regex_map, prefix, Pair{Regex,String}[])
+                m = match(regex, rest)
+                isnothing(m) && continue
+                ver = m.captures[1]
+                if length(ver) >= 3 && ver[1] in '0':'9' && !contains(ver, "/")
+                    return (proj, ver)
                 end
             end
         end
